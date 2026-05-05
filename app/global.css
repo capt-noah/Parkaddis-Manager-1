@@ -1,0 +1,33 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-background text-slate-900 font-body;
+  }
+}
+
+@layer components {
+  .ticket-notch {
+    @apply relative border-t-2 border-dashed border-slate-100;
+  }
+  
+  .ticket-notch::before,
+  .ticket-notch::after {
+    content: '';
+    @apply absolute w-6 h-6 bg-background rounded-full top-1/2 -translate-y-1/2;
+  }
+  
+  .ticket-notch::before {
+    @apply -left-3;
+  }
+  
+  .ticket-notch::after {
+    @apply -right-3;
+  }
+
+  .bottom-sheet-notch {
+    @apply absolute w-6 h-6 bg-background rounded-full top-1/2 -translate-y-1/2;
+  }
+}

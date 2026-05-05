@@ -1,0 +1,7 @@
+{
+  "name": "ParkAddis Manager",
+  "description": "A high-fidelity parking management system for terminal administrators, featuring real-time occupancy tracking, QR scanning, and automated checkouts.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
