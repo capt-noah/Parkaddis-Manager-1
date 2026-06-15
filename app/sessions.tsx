@@ -13,41 +13,52 @@ import BottomNav from '../components/BottomNav';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
 
-import { apiFetch } from '../lib/api';
+import { fetchClerkSessions, ClerkSession, isPaidSession, getSessionTotal } from '../lib/clerkSessions';
+import { TicketQrModal } from '../components/TicketQrModal';
+import { ReceiptModal } from '../components/ReceiptModal';
+import {
+  clerkSessionToReservation,
+  getSessionModalType,
+  Reservation,
+} from '../lib/reservationDisplay';
+import { SessionsShimmer } from '../components/SessionsShimmer';
 
-interface Session {
-  id: string;
-  plateNumber: string;
-  duration: string;
-  accrued: string;
-  status: 'RESERVED' | 'ACTIVE' | 'COMPLETED' | 'CANCELLED';
-  paymentStatus: 'PENDING' | 'PAID';
-  startTime: string;
-}
+type SessionFilter = 'all' | 'active' | 'unpaid' | 'paid';
 
-type SessionFilter = 'all' | 'active' | 'unpaid' | 'completed';
-
-const FILTER_OPTIONS: SessionFilter[] = ['all', 'active', 'unpaid', 'completed'];
+const FILTER_OPTIONS: SessionFilter[] = ['all', 'active', 'unpaid', 'paid'];
 
 export default function Sessions() {
   const [activeFilter, setActiveFilter] = useState<SessionFilter>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [refreshing, setRefreshing] = useState(false);
-  const [allSessions, setAllSessions] = useState<Session[]>([]);
+  const [allSessions, setAllSessions] = useState<ClerkSession[]>([]);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [ticketFor, setTicketFor] = useState<Reservation | null>(null);
+  const [receiptFor, setReceiptFor] = useState<Reservation | null>(null);
   const { isDark } = useTheme();
+
+  const openSessionDetail = useCallback((session: ClerkSession) => {
+    const reservation = clerkSessionToReservation(session);
+    if (getSessionModalType(session) === 'ticket') {
+      setReceiptFor(null);
+      setTicketFor(reservation);
+    } else {
+      setTicketFor(null);
+      setReceiptFor(reservation);
+    }
+  }, []);
 
   const fetchData = async () => {
     setIsLoading(true);
-    const result = await apiFetch<Session[]>('/reservation');
-    
+    setFetchError(null);
+    const result = await fetchClerkSessions();
+
     if (result.ok && result.data) {
-      // Handle potential wrapped response { data: [...] } or direct array [...]
-      const sessions = Array.isArray(result.data) 
-        ? result.data 
-        : (result.data as any).data || (result.data as any).reservations || [];
-        
-      setAllSessions(Array.isArray(sessions) ? sessions : []);
+      setAllSessions(result.data.reservations);
+    } else if (result.status === 403) {
+      setAllSessions([]);
+      setFetchError(result.error || 'Shift ended. Please hand over the device.');
     }
     setIsLoading(false);
   };
@@ -70,9 +81,9 @@ export default function Sessions() {
       } else if (activeFilter === 'active') {
         matchesFilter = session.status === 'ACTIVE';
       } else if (activeFilter === 'unpaid') {
-        matchesFilter = session.paymentStatus === 'PENDING';
-      } else if (activeFilter === 'completed') {
-        matchesFilter = session.status === 'COMPLETED';
+        matchesFilter = session.status !== 'PAID';
+      } else if (activeFilter === 'paid') {
+        matchesFilter = isPaidSession(session);
       }
       const plate = session.plateNumber || '';
       const matchesSearch = plate.toLowerCase().includes(searchQuery.toLowerCase());
@@ -89,6 +100,10 @@ export default function Sessions() {
       <TopBar />
 
       <View className="flex-1 w-full pt-2">
+        {isLoading || refreshing ? (
+          <SessionsShimmer />
+        ) : (
+          <>
         <View className="px-6 mb-4">
           <View className="relative mb-4">
             <View className="absolute left-4 top-4 z-10">
@@ -150,10 +165,19 @@ export default function Sessions() {
           }
         >
           <View className="gap-6 w-full">
-            {filteredSessions.length > 0 ? (
+            {fetchError ? (
+              <View className="w-full py-16 items-center justify-center bg-red-50 dark:bg-red-900/20 rounded-[32px] border border-red-100 dark:border-red-900/30 px-6">
+                <AlertCircle size={40} color="#dc2626" />
+                <Text className="text-lg font-headline font-bold text-red-700 dark:text-red-400 mt-4 text-center">
+                  {fetchError}
+                </Text>
+              </View>
+            ) : filteredSessions.length > 0 ? (
               filteredSessions.map((session) => (
-                <View
+                <TouchableOpacity
                   key={session.id}
+                  activeOpacity={0.85}
+                  onPress={() => openSessionDetail(session)}
                   className="bg-white dark:bg-slate-800 rounded-[32px] p-6 border border-slate-100 dark:border-slate-700 shadow-sm"
                 >
                   <View className="flex-row justify-between items-start mb-6">
@@ -177,9 +201,9 @@ export default function Sessions() {
                         <View className="px-3 py-1 rounded-full bg-blue-50 dark:bg-blue-900/20">
                           <Text className="text-[10px] font-bold tracking-widest uppercase text-blue-600 dark:text-blue-400">Reserved</Text>
                         </View>
-                      ) : session.paymentStatus === 'PAID' ? (
+                      ) : isPaidSession(session) ? (
                         <View className="px-3 py-1 rounded-full bg-primary/10 dark:bg-primary/20">
-                          <Text className="text-[10px] font-bold tracking-widest uppercase text-primary dark:text-emerald-500">Completed</Text>
+                          <Text className="text-[10px] font-bold tracking-widest uppercase text-primary dark:text-emerald-500">Paid</Text>
                         </View>
                       ) : (
                         <View className="px-3 py-1 rounded-full bg-red-50 dark:bg-red-900/20">
@@ -202,12 +226,12 @@ export default function Sessions() {
                     <View className="flex-row items-center gap-3 pr-4">
                       <CreditCard size={16} color={isDark ? "#64748b" : "#94a3b8"} />
                       <View>
-                        <Text className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Accrued</Text>
-                        <Text className="text-sm font-bold text-slate-900 dark:text-white font-mono">{session.accrued ? `ETB ${session.accrued}` : 'N/A'}</Text>
+                        <Text className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Total</Text>
+                        <Text className="text-sm font-bold text-slate-900 dark:text-white font-mono">{getSessionTotal(session) !== '0' ? `ETB ${getSessionTotal(session)}` : 'N/A'}</Text>
                       </View>
                     </View>
                   </View>
-                </View>
+                </TouchableOpacity>
               ))
             ) : (
               <View className="w-full py-20 items-center justify-center">
@@ -220,7 +244,20 @@ export default function Sessions() {
             )}
           </View>
         </ScrollView>
+          </>
+        )}
       </View>
+
+      <TicketQrModal
+        visible={!!ticketFor}
+        reservation={ticketFor}
+        onClose={() => setTicketFor(null)}
+      />
+      <ReceiptModal
+        visible={!!receiptFor}
+        reservation={receiptFor}
+        onClose={() => setReceiptFor(null)}
+      />
 
       <BottomNav />
     </SafeAreaView>

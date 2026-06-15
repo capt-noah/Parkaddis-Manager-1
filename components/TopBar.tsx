@@ -1,6 +1,7 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, Image } from 'react-native';
+import { View, Text, TouchableOpacity } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useAuth } from '../context/AuthContext';
 
 interface TopBarProps {
   showProfile?: boolean;
@@ -18,6 +19,9 @@ export default function TopBar({
   onProfileClick
 }: TopBarProps) {
   const router = useRouter();
+  const { user } = useAuth();
+
+  const initial = (user?.fullName || user?.name || '?').charAt(0).toUpperCase();
 
   const handleProfileClick = () => {
     if (onProfileClick) {
@@ -45,13 +49,11 @@ export default function TopBar({
             onPress={handleProfileClick}
             className="active:opacity-80"
           >
-            <View className="w-10 h-10 rounded-full overflow-hidden items-center justify-center bg-slate-100 dark:bg-slate-800">
+            <View className="w-10 h-10 rounded-full items-center justify-center bg-primary">
               {profileIcon || (
-                <Image
-                  source={{ uri: "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?ixlib=rb-1.2.1&auto=format&fit=facearea&facepad=2&w=256&h=256&q=80" }}
-                  className="w-full h-full"
-                  resizeMode="cover"
-                />
+                <Text className="text-white font-headline font-extrabold text-base">
+                  {initial}
+                </Text>
               )}
             </View>
           </TouchableOpacity>

@@ -32,7 +32,15 @@
     },
     "plugins": [
       "expo-router",
-      "expo-font"
+      "expo-font",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "ParkAddis needs camera access to scan parking QR codes.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

@@ -1,300 +1,497 @@
-import React, { useState, useCallback, useEffect } from 'react';
-import { View, Text, TextInput, TouchableOpacity, ScrollView, Platform, KeyboardAvoidingView, ActivityIndicator } from 'react-native';
-import { useRouter } from 'expo-router';
-import { Car, CreditCard, Banknote, Clock, Hash, CheckCircle, MapPin, ChevronDown, AlertCircle } from 'lucide-react-native';
-import TopBar from '../components/TopBar';
-import BottomNav from '../components/BottomNav';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useTheme } from '../context/ThemeContext';
-import { apiFetch } from '../lib/api';
+import React, { useState, useEffect } from "react";
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  ScrollView,
+  Platform,
+  KeyboardAvoidingView,
+} from "react-native";
+import { useRouter } from "expo-router";
+import { AlertCircle, CheckCircle2, ShieldAlert } from "lucide-react-native";
+import TopBar from "../components/TopBar";
+import BottomNav from "../components/BottomNav";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { useTheme } from "../context/ThemeContext";
+import { apiFetch } from "../lib/api";
+import Loader from '../components/Loader';
+import {
+  searchClerkUser,
+  verifyClerkPayment,
+  getSearchErrorMessage,
+  isPaymentCleared,
+  PaymentVerificationResult,
+} from "../lib/clerkGate";
 
-interface ParkingSpot {
-  id: string;
-  pricePerHour: string;
-  availableSlots: number;
-}
-
-interface ParkingLocation {
-  id: string;
-  name: string;
-  address: string;
+interface SearchResult {
+  user: any;
+  reservation: any | null;
 }
 
 export default function ManualReservation() {
   const router = useRouter();
   const { isDark } = useTheme();
-  const [paymentType, setPaymentType] = useState<'cash' | 'transfer'>('cash');
-  const [vehicleId, setVehicleId] = useState('');
-  const [plateNote, setPlateNote] = useState('');
-  const [durationMinutes, setDurationMinutes] = useState('60');
   const [isLoading, setIsLoading] = useState(false);
-  const [isFetchingSpots, setIsFetchingSpots] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [spots, setSpots] = useState<{ location: ParkingLocation; spot: ParkingSpot } | null>(null);
-  const [selectedSpotId, setSelectedSpotId] = useState<string | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [qrToken, setQrToken] = useState("");
+  const [searchMode, setSearchMode] = useState<"phone" | "email">("phone");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchPaymentResults, setSearchPaymentResults] = useState<
+    Record<string, PaymentVerificationResult>
+  >({});
+  const [verifyingReservationId, setVerifyingReservationId] = useState<string | null>(null);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
 
-  const onSelectPayment = useCallback((type: 'cash' | 'transfer') => {
-    setPaymentType(type);
-  }, []);
+  const extractReservation = (result: any) => {
+    if (!result) return null;
 
-  // Fetch available parking spots on mount
-  useEffect(() => {
-    const loadSpots = async () => {
-      setIsFetchingSpots(true);
-      const result = await apiFetch<any>('/parking?distance=All');
-      if (result.ok && result.data) {
-        const locations = Array.isArray(result.data)
-          ? result.data
-          : (result.data as any).data || (result.data as any).locations || [];
-        if (locations.length > 0) {
-          // Fetch detail of first location to get spotId
-          const detailResult = await apiFetch<any>('/parking/location', {
-            method: 'POST',
-            body: JSON.stringify({ id: locations[0].id }),
-          });
-          if (detailResult.ok && detailResult.data) {
-            setSpots(detailResult.data);
-            setSelectedSpotId(detailResult.data.spot?.id || null);
-          }
-        }
+    // If this object already looks like a reservation, return it
+    if (
+      result.id &&
+      (result.status || result.actualStartTime || result.actualEndTime)
+    )
+      return result;
+
+    // Common wrapper shapes
+    if (result.reservation) return result.reservation;
+    if (result.reservedSpot) return result.reservedSpot;
+
+    // Some backends wrap payload in `data`
+    if (result.data) {
+      const inner = result.data;
+      if (inner.reservation) return inner.reservation;
+      if (inner.reservedSpot) return inner.reservedSpot;
+      if (
+        inner.id &&
+        (inner.status || inner.actualStartTime || inner.actualEndTime)
+      )
+        return inner;
+      // If data is an array, pick active/reserved
+      if (Array.isArray(inner)) {
+        return (
+          inner.find(
+            (r: any) => r.status === "ACTIVE" || r.status === "RESERVED",
+          ) ||
+          inner[0] ||
+          null
+        );
       }
-      setIsFetchingSpots(false);
-    };
-    loadSpots();
-  }, []);
-
-  const handleSubmit = async () => {
-    if (!vehicleId.trim()) {
-      setError('Vehicle ID is required to create a reservation.');
-      return;
-    }
-    if (!selectedSpotId) {
-      setError('No parking spot available. Please try again.');
-      return;
     }
 
+    // If object contains list of reservations
+    if (Array.isArray(result.reservations)) {
+      return (
+        result.reservations.find(
+          (r: any) => r.status === "ACTIVE" || r.status === "RESERVED",
+        ) ||
+        result.reservations[0] ||
+        null
+      );
+    }
+
+    // As a last resort, search one level deep for an object that looks like a reservation
+    for (const key of Object.keys(result)) {
+      const candidate = result[key];
+      if (candidate && typeof candidate === "object" && candidate.id)
+        return candidate;
+    }
+
+    return null;
+  };
+
+  const handleValidateToken = async (token?: string) => {
+    const finalToken = (token || qrToken).trim();
+    if (!finalToken) {
+      setValidationError("Enter a QR token to validate.");
+      return;
+    }
+
+    setValidationError(null);
     setIsLoading(true);
-    setError(null);
 
-    const startTime = new Date().toISOString();
-    const endTime = new Date(Date.now() + parseInt(durationMinutes || '60', 10) * 60 * 1000).toISOString();
-
-    const result = await apiFetch<any>('/reservation', {
-      method: 'POST',
-      body: JSON.stringify({
-        spotId: selectedSpotId,
-        vehicleId: vehicleId.trim(),
-        startTime,
-        endTime,
-      }),
+    const result = await apiFetch<any>("/reservation/validate", {
+      method: "POST",
+      body: JSON.stringify({ qrToken: finalToken }),
     });
 
     setIsLoading(false);
 
     if (result.ok && result.data) {
-      const reservation = result.data.reservedSpot || result.data.data || result.data;
-      router.push({
-        pathname: '/success',
-        params: { reservationId: reservation.id },
-      });
+      const reservation = extractReservation(result.data);
+      if (reservation?.status === "COMPLETED") {
+        router.push({
+          pathname: "/checkout-success",
+          params: { reservationId: reservation.id, reservationData: JSON.stringify(reservation) },
+        });
+      } else if (reservation?.id) {
+        router.push({
+          pathname: "/success",
+          params: { reservationId: reservation.id, reservationData: JSON.stringify(reservation) },
+        });
+      } else {
+        router.push(
+          `/scan-fail?message=${encodeURIComponent("QR validation succeeded but reservation data is unavailable.")}`,
+        );
+      }
     } else {
-      setError(result.error || 'Failed to create reservation. Check the Vehicle ID and try again.');
+      router.push(
+        `/scan-fail?message=${encodeURIComponent(result.error || "Failed to validate QR token.")}`,
+      );
     }
   };
 
-  const iconColor = isDark ? '#64748b' : '#94a3b8';
-  const placeholderColor = isDark ? '#475569' : '#cbd5e1';
+  const handleSearchUser = async () => {
+    const query = searchQuery.trim();
+    if (!query) {
+      setSearchError(
+        searchMode === "phone"
+          ? "Enter a phone number to search."
+          : "Enter an email address to search.",
+      );
+      return;
+    }
+
+    setSearchError(null);
+    setIsSearching(true);
+
+    const result = await searchClerkUser(
+      searchMode === "phone"
+        ? { phoneNumber: query }
+        : { email: query },
+    );
+    setIsSearching(false);
+
+    if (result.ok && result.data) {
+      const { user, activeReservation, locationMismatch } = result.data;
+
+      if (!user?.id) {
+        setSearchResults([]);
+        setSearchError("No user found.");
+        return;
+      }
+
+      const reservation = activeReservation || null;
+      setSearchResults([{ user, reservation }]);
+
+      if (locationMismatch) {
+        setSearchError(
+          "User found, but their active reservation belongs to another parking location.",
+        );
+      } else if (!reservation) {
+        setSearchError("User found but no active reservation at your location.");
+      }
+    } else {
+      setSearchResults([]);
+      setSearchError(getSearchErrorMessage(result));
+    }
+  };
+
+  const handleSearchVerifyPayment = async (reservation: {
+    id: string;
+    qrToken?: string;
+  }) => {
+    setVerifyingReservationId(reservation.id);
+    setSearchError(null);
+
+    const result = await verifyClerkPayment({
+      reservationId: reservation.id,
+      ...(reservation.qrToken ? { qrToken: reservation.qrToken } : {}),
+    });
+
+    setVerifyingReservationId(null);
+
+    if (result.ok && result.data) {
+      setSearchPaymentResults((prev) => ({
+        ...prev,
+        [reservation.id]: result.data!,
+      }));
+    } else {
+      setSearchError(
+        result.error || "Payment verification failed. Please try again.",
+      );
+    }
+  };
 
   return (
-    <SafeAreaView className="flex-1 bg-background dark:bg-slate-900" edges={['top']}>
+    <SafeAreaView
+      className="flex-1 bg-background dark:bg-slate-900"
+      edges={["top"]}
+    >
       <TopBar />
 
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
         className="flex-1"
       >
         <ScrollView
-          contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 8, paddingBottom: 120 }}
+          contentContainerStyle={{
+            paddingHorizontal: 24,
+            paddingTop: 8,
+            paddingBottom: 120,
+          }}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
           <View className="mb-6 mt-4">
             <Text className="text-2xl font-headline font-bold tracking-tight text-primary dark:text-emerald-500">
-              Manual Check-In
+              Manual Session Control
             </Text>
             <Text className="text-slate-500 dark:text-slate-400 font-medium mt-1">
-              Register a walk-in vehicle directly
+              Search for a user or validate a QR token manually.
             </Text>
           </View>
 
-          {/* Spot Info Banner */}
-          {isFetchingSpots ? (
-            <View className="bg-white dark:bg-slate-800 rounded-3xl p-4 mb-4 border border-slate-100 dark:border-slate-700 flex-row items-center gap-3">
-              <ActivityIndicator size="small" color="#064e3b" />
-              <Text className="text-slate-500 dark:text-slate-400 text-sm font-medium">Loading available spots...</Text>
-            </View>
-          ) : spots ? (
-            <View className="bg-primary/5 dark:bg-emerald-900/20 rounded-3xl p-4 mb-4 border border-primary/10 dark:border-emerald-800/30 flex-row items-center gap-3">
-              <View className="w-10 h-10 bg-primary rounded-xl items-center justify-center">
-                <MapPin size={18} color="white" />
-              </View>
-              <View className="flex-1">
-                <Text className="text-xs font-bold text-primary dark:text-emerald-500 uppercase tracking-wider">
-                  Assigning to: {spots.location?.name || 'Parking Area'}
-                </Text>
-                <Text className="text-[10px] text-slate-400 font-medium mt-0.5">
-                  {spots.spot?.availableSlots ?? '–'} slots available · {spots.spot?.pricePerHour ?? '–'} ETB/hr
-                </Text>
-              </View>
-            </View>
-          ) : (
-            <View className="bg-amber-50 dark:bg-amber-900/20 rounded-3xl p-4 mb-4 border border-amber-100 dark:border-amber-800/30 flex-row items-center gap-3">
-              <AlertCircle size={20} color="#d97706" />
-              <Text className="text-amber-700 dark:text-amber-400 text-xs font-bold flex-1">
-                Could not load parking spots. Check connection.
+          <View className="bg-white dark:bg-slate-800 rounded-[32px] p-6 mb-6 border border-slate-100 dark:border-slate-700 shadow-sm">
+            <Text className="text-sm font-bold uppercase tracking-widest text-slate-900 dark:text-white mb-4">
+              Validate reservation
+            </Text>
+
+            <View className="mb-4">
+              <Text className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-2">
+                QR token
               </Text>
-            </View>
-          )}
-
-          {/* Form Card */}
-          <View className="bg-white dark:bg-slate-800 rounded-[32px] shadow-sm border border-slate-100 dark:border-slate-700 overflow-hidden w-full">
-            <View className="p-8 border-b border-dashed border-slate-100 dark:border-slate-700">
-              <View className="gap-6 w-full">
-
-                {/* Vehicle ID */}
-                <View>
-                  <Text className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-2 px-1">
-                    Vehicle ID
-                  </Text>
-                  <View className="relative justify-center">
-                    <View className="absolute left-4 z-10">
-                      <Hash size={20} color={iconColor} />
-                    </View>
-                    <TextInput
-                      className="w-full pl-12 pr-4 py-4 bg-slate-50 dark:bg-slate-900/50 border-0 rounded-xl text-slate-900 dark:text-white font-semibold"
-                      placeholder="Customer's vehicle UUID"
-                      placeholderTextColor={placeholderColor}
-                      autoCapitalize="none"
-                      value={vehicleId}
-                      onChangeText={setVehicleId}
-                    />
-                  </View>
-                  <Text className="text-[10px] text-slate-400 mt-1 px-1">
-                    Found in customer profile under "My Vehicles"
-                  </Text>
-                </View>
-
-                {/* Plate Note */}
-                <View>
-                  <Text className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-2 px-1">
-                    Plate Number (Note)
-                  </Text>
-                  <View className="relative justify-center">
-                    <View className="absolute left-4 z-10">
-                      <Car size={20} color={iconColor} />
-                    </View>
-                    <TextInput
-                      className="w-full pl-12 pr-4 py-4 bg-slate-50 dark:bg-slate-900/50 border-0 rounded-xl text-slate-900 dark:text-white font-semibold"
-                      placeholder="e.g. AA-12345 (optional)"
-                      placeholderTextColor={placeholderColor}
-                      autoCapitalize="characters"
-                      value={plateNote}
-                      onChangeText={setPlateNote}
-                    />
-                  </View>
-                </View>
-              </View>
-
-              {/* Ticket Notch */}
-              <View className="absolute -bottom-3 -left-3 w-6 h-6 bg-background dark:bg-slate-900 rounded-full border border-slate-100 dark:border-slate-700" style={{ borderRightWidth: 1, borderTopWidth: 1, borderBottomWidth: 0, borderLeftWidth: 0, transform: [{ rotate: '45deg' }] }} />
-              <View className="absolute -bottom-3 -right-3 w-6 h-6 bg-background dark:bg-slate-900 rounded-full border border-slate-100 dark:border-slate-700" style={{ borderLeftWidth: 1, borderTopWidth: 1, borderBottomWidth: 0, borderRightWidth: 0, transform: [{ rotate: '-45deg' }] }} />
+              <TextInput
+                placeholder="Enter scanned QR token"
+                placeholderTextColor={isDark ? "#475569" : "#94a3b8"}
+                value={qrToken}
+                onChangeText={setQrToken}
+                className="w-full bg-slate-50 dark:bg-slate-900/50 rounded-2xl py-4 px-4 text-slate-900 dark:text-white"
+              />
             </View>
 
-            <View className="p-8 gap-8 w-full">
-              <View className="gap-6 w-full">
+            <TouchableOpacity
+              onPress={() => handleValidateToken()}
+              disabled={isLoading}
+              className={`w-full py-4 rounded-2xl items-center justify-center mb-4 ${isLoading ? "bg-slate-200 dark:bg-slate-700" : "bg-primary dark:bg-emerald-800"}`}
+            >
+              {isLoading ? <Loader size="sm" color="bg-white" /> : <Text className="text-white font-bold">Validate QR Token</Text>}
+            </TouchableOpacity>
 
-                {/* Duration */}
-                <View>
-                  <Text className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-2 px-1">
-                    Estimated Duration (minutes)
-                  </Text>
-                  <View className="relative justify-center">
-                    <View className="absolute left-4 z-10">
-                      <Clock size={20} color={iconColor} />
-                    </View>
-                    <TextInput
-                      className="w-full pl-12 pr-4 py-4 bg-slate-50 dark:bg-slate-900/50 border-0 rounded-xl text-slate-900 dark:text-white font-semibold"
-                      placeholder="60"
-                      keyboardType="numeric"
-                      placeholderTextColor={placeholderColor}
-                      value={durationMinutes}
-                      onChangeText={setDurationMinutes}
-                    />
-                  </View>
-                </View>
-
-                {/* Payment Type */}
-                <View>
-                  <Text className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-2 px-1">
-                    Payment Type
-                  </Text>
-                  <View className="flex-row gap-3 w-full">
+            <View className="border-t border-slate-200 dark:border-slate-700 pt-6">
+              <Text className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-3">
+                Search user
+              </Text>
+              <View className="flex-row gap-2 mb-3">
+                {(["phone", "email"] as const).map((mode) => {
+                  const selected = searchMode === mode;
+                  return (
                     <TouchableOpacity
-                      onPress={() => onSelectPayment('cash')}
-                      activeOpacity={0.7}
-                      className={`flex-1 flex-row items-center justify-center gap-2 py-4 rounded-xl shadow-sm ${
-                        paymentType === 'cash' ? 'bg-primary dark:bg-emerald-800' : 'bg-slate-100 dark:bg-slate-900'
+                      key={mode}
+                      onPress={() => setSearchMode(mode)}
+                      className={`px-4 py-2 rounded-full border ${
+                        selected
+                          ? "bg-primary dark:bg-emerald-800 border-transparent"
+                          : "bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700"
                       }`}
                     >
-                      <Banknote size={16} color={paymentType === 'cash' ? 'white' : '#64748b'} />
-                      <Text className={`font-bold text-sm ${paymentType === 'cash' ? 'text-white' : 'text-slate-500 dark:text-slate-400'}`}>
-                        Cash
+                      <Text
+                        className={`text-[10px] font-bold uppercase tracking-widest ${
+                          selected ? "text-white" : "text-slate-400"
+                        }`}
+                      >
+                        {mode}
                       </Text>
                     </TouchableOpacity>
-
-                    <TouchableOpacity
-                      onPress={() => onSelectPayment('transfer')}
-                      activeOpacity={0.7}
-                      className={`flex-1 flex-row items-center justify-center gap-2 py-4 rounded-xl shadow-sm ${
-                        paymentType === 'transfer' ? 'bg-primary dark:bg-emerald-800' : 'bg-slate-100 dark:bg-slate-900'
-                      }`}
-                    >
-                      <CreditCard size={16} color={paymentType === 'transfer' ? 'white' : '#64748b'} />
-                      <Text className={`font-bold text-sm ${paymentType === 'transfer' ? 'text-white' : 'text-slate-500 dark:text-slate-400'}`}>
-                        Transfer
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
+                  );
+                })}
               </View>
-
-              {error && (
-                <View className="p-4 bg-red-50 dark:bg-red-900/20 rounded-xl border border-red-100 dark:border-red-900/30">
-                  <Text className="text-red-600 dark:text-red-400 text-xs font-bold">{error}</Text>
-                </View>
-              )}
-
-              <View className="pt-4">
+              <View className="flex-row gap-3">
+                <TextInput
+                  placeholder={
+                    searchMode === "phone"
+                      ? "0911223344 or +251911223344"
+                      : "user@example.com"
+                  }
+                  placeholderTextColor={isDark ? "#475569" : "#94a3b8"}
+                  value={searchQuery}
+                  onChangeText={setSearchQuery}
+                  keyboardType={searchMode === "phone" ? "phone-pad" : "email-address"}
+                  autoCapitalize="none"
+                  className="flex-1 bg-slate-50 dark:bg-slate-900/50 rounded-2xl py-4 px-4 text-slate-900 dark:text-white"
+                />
                 <TouchableOpacity
-                  onPress={handleSubmit}
-                  disabled={isLoading || !vehicleId.trim() || !selectedSpotId}
-                  className={`w-full py-5 rounded-2xl shadow-lg shadow-primary/20 flex-row items-center justify-center gap-3 ${
-                    isLoading || !vehicleId.trim() || !selectedSpotId
-                      ? 'bg-slate-200 dark:bg-slate-700'
-                      : 'bg-primary dark:bg-emerald-800 active:bg-emerald-900'
-                  }`}
+                  onPress={handleSearchUser}
+                  disabled={isSearching}
+                  className={`px-5 py-4 rounded-2xl items-center justify-center ${isSearching ? "bg-slate-200 dark:bg-slate-700" : "bg-primary dark:bg-emerald-800"}`}
                 >
-                  {isLoading ? (
-                    <ActivityIndicator size="small" color="white" />
-                  ) : (
-                    <CheckCircle size={24} color="white" />
-                  )}
-                  <Text className="text-white font-headline font-bold text-lg">
-                    {isLoading ? 'Processing...' : 'Check-In Vehicle'}
-                  </Text>
+                  {isSearching ? <Loader size="sm" color="bg-white" /> : <Text className="text-white font-bold">Search</Text>}
                 </TouchableOpacity>
               </View>
+              {searchError ? (
+                <Text className="text-red-600 dark:text-red-400 text-sm mt-3">
+                  {searchError}
+                </Text>
+              ) : null}
             </View>
+
+            {searchResults.length > 0 ? (
+              <View className="mt-6 space-y-4">
+                {searchResults.map((result, index) => {
+                  const reservation = result.reservation;
+                  const phone =
+                    result.user?.phoneNumber ||
+                    result.user?.phone ||
+                    "Unknown phone";
+                  const name =
+                    result.user?.fullName ||
+                    result.user?.name ||
+                    "Unknown user";
+                  const vehiclePlate =
+                    reservation?.plateNumber ||
+                    reservation?.vehicle?.plateNumber ||
+                    "Unknown vehicle";
+                  const status = reservation?.status || "No active reservation";
+                  const token =
+                    reservation?.qrToken || reservation?.token || "";
+
+                  return (
+                    <View
+                      key={`${result.user?.id || index}-${token}-${status}`}
+                      className="bg-slate-50 dark:bg-slate-900 rounded-3xl p-4 border border-slate-200 dark:border-slate-700"
+                    >
+                      <View className="flex-row justify-between items-start mb-3">
+                        <View>
+                          <Text className="font-bold text-slate-900 dark:text-white">
+                            {name}
+                          </Text>
+                          <Text className="text-[10px] uppercase tracking-wider text-slate-400 dark:text-slate-500 mt-1">
+                            {phone}
+                          </Text>
+                        </View>
+                        <View className="px-3 py-1 rounded-full bg-slate-100 dark:bg-slate-800">
+                          <Text className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                            {status}
+                          </Text>
+                        </View>
+                      </View>
+
+                      <Text className="text-sm text-slate-600 dark:text-slate-400 mb-3">
+                        Vehicle: {vehiclePlate}
+                      </Text>
+
+                      {reservation ? (
+                        <View className="gap-3">
+                          {reservation.status === "RESERVED" && token ? (
+                            <TouchableOpacity
+                              onPress={() => handleValidateToken(token)}
+                              disabled={isLoading || actionLoading === reservation.id}
+                              className={`w-full py-4 rounded-2xl items-center justify-center ${isLoading || actionLoading === reservation.id ? "bg-slate-200 dark:bg-slate-700" : "bg-primary dark:bg-emerald-800"}`}
+                            >
+                              {actionLoading === reservation.id ? (
+                                <Loader size="sm" color="bg-white" />
+                              ) : (
+                                <Text className="text-white font-bold">
+                                  Validate Token
+                                </Text>
+                              )}
+                            </TouchableOpacity>
+                          ) : null}
+
+                          {reservation.status === "ACTIVE" && token ? (
+                            <TouchableOpacity
+                              onPress={() => {
+                                setActionLoading(reservation.id);
+                                handleValidateToken(token).finally(() =>
+                                  setActionLoading(null),
+                                );
+                              }}
+                              disabled={isLoading || actionLoading === reservation.id}
+                              className={`w-full py-4 rounded-2xl items-center justify-center ${isLoading || actionLoading === reservation.id ? "bg-slate-200 dark:bg-slate-700" : "bg-primary dark:bg-emerald-800"}`}
+                            >
+                              {actionLoading === reservation.id ? (
+                                <Loader size="sm" color="bg-white" />
+                              ) : (
+                                <Text className="text-white font-bold">
+                                  Complete Session
+                                </Text>
+                              )}
+                            </TouchableOpacity>
+                          ) : null}
+
+                          {reservation.status === "COMPLETED" ? (
+                            <TouchableOpacity
+                              onPress={() => handleSearchVerifyPayment(reservation)}
+                              disabled={verifyingReservationId === reservation.id}
+                              className={`w-full py-4 rounded-2xl items-center justify-center ${
+                                verifyingReservationId === reservation.id
+                                  ? "bg-slate-200 dark:bg-slate-700"
+                                  : "bg-emerald-500 dark:bg-emerald-600"
+                              }`}
+                            >
+                              <Text className="text-white font-bold">
+                                Verify Payment
+                              </Text>
+                            </TouchableOpacity>
+                          ) : null}
+
+                          {searchPaymentResults[reservation.id] ? (
+                            <View
+                              className={`rounded-2xl p-4 border ${
+                                isPaymentCleared(
+                                  searchPaymentResults[reservation.id].paymentStatus,
+                                )
+                                  ? "bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800"
+                                  : "bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800"
+                              }`}
+                            >
+                              <View className="flex-row items-center gap-2 mb-2">
+                                {isPaymentCleared(
+                                  searchPaymentResults[reservation.id].paymentStatus,
+                                ) ? (
+                                  <CheckCircle2 size={20} color="#059669" />
+                                ) : (
+                                  <ShieldAlert size={20} color="#dc2626" />
+                                )}
+                                <Text
+                                  className={`flex-1 text-sm font-bold ${
+                                    isPaymentCleared(
+                                      searchPaymentResults[reservation.id].paymentStatus,
+                                    )
+                                      ? "text-emerald-700 dark:text-emerald-400"
+                                      : "text-red-700 dark:text-red-400"
+                                  }`}
+                                >
+                                  {isPaymentCleared(
+                                    searchPaymentResults[reservation.id].paymentStatus,
+                                  )
+                                    ? "Payment Cleared - Open Gate"
+                                    : "Not Paid - Do Not Open Gate"}
+                                </Text>
+                              </View>
+                              <Text className="text-xs text-slate-600 dark:text-slate-300">
+                                ETB {searchPaymentResults[reservation.id].amount}
+                              </Text>
+                            </View>
+                          ) : null}
+
+                          {!token &&
+                          (reservation.status === "RESERVED" ||
+                            reservation.status === "ACTIVE") ? (
+                            <Text className="text-sm text-amber-600 dark:text-amber-400">
+                              No QR token available for this reservation.
+                            </Text>
+                          ) : null}
+                        </View>
+                      ) : (
+                        <Text className="text-sm text-slate-500 dark:text-slate-400">
+                          No active reservation found for this user.
+                        </Text>
+                      )}
+                    </View>
+                  );
+                })}
+              </View>
+            ) : null}
+
+            {validationError ? (
+              <Text className="text-red-600 dark:text-red-400 text-sm mt-4">
+                {validationError}
+              </Text>
+            ) : null}
           </View>
         </ScrollView>
       </KeyboardAvoidingView>

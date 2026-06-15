@@ -4,9 +4,12 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import "./global.css";
 
-import { configureReanimatedLogger, ReanimatedLogLevel } from 'react-native-reanimated';
-import { ThemeProvider, useTheme } from '../context/ThemeContext';
-import { AuthProvider } from '../context/AuthContext';
+import {
+  configureReanimatedLogger,
+  ReanimatedLogLevel,
+} from "react-native-reanimated";
+import { ThemeProvider, useTheme } from "../context/ThemeContext";
+import { AuthProvider } from "../context/AuthContext";
 
 configureReanimatedLogger({
   level: ReanimatedLogLevel.warn,
@@ -14,11 +17,11 @@ configureReanimatedLogger({
 });
 
 // Core tab screens share no animation; sub-pages keep native slide
-const NO_ANIM = { animation: 'none' as const };
+const NO_ANIM = { animation: "none" as const };
 
 function NavigationStack() {
   const { isDark } = useTheme();
-  
+
   return (
     <Stack
       screenOptions={{
@@ -29,12 +32,16 @@ function NavigationStack() {
       <Stack.Screen name="index" options={NO_ANIM} />
       <Stack.Screen name="dashboard" options={NO_ANIM} />
       <Stack.Screen name="sessions" options={NO_ANIM} />
-      <Stack.Screen name="analytics" options={NO_ANIM} />
       <Stack.Screen name="manual-reservation" options={NO_ANIM} />
       <Stack.Screen name="profile" options={NO_ANIM} />
       <Stack.Screen name="scanner" options={NO_ANIM} />
       <Stack.Screen name="success" options={NO_ANIM} />
       <Stack.Screen name="checkout-success" options={NO_ANIM} />
+      <Stack.Screen name="payment-verify-success" options={NO_ANIM} />
+      <Stack.Screen name="payment-verify-fail" options={NO_ANIM} />
+      <Stack.Screen name="walkin-success" options={NO_ANIM} />
+      <Stack.Screen name="walkin-fail" options={NO_ANIM} />
+      <Stack.Screen name="scan-fail" options={NO_ANIM} />
     </Stack>
   );
 }

@@ -10,11 +10,15 @@ View your app in AI Studio: https://ai.studio/apps/ae452d75-87fb-4544-ba36-b4fde
 
 ## Run Locally
 
-**Prerequisites:**  Node.js
-
+**Prerequisites:** Node.js
 
 1. Install dependencies:
    `npm install`
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
+
+## Clerk Integration Guide
+
+- The full clerk backend documentation is available in `clerk_app_integration_guide.md`.
+- It is also integrated into the mobile app under Settings → Clerk Integration Guide.

@@ -1,22 +1,31 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { apiFetch, setApiSessionId } from '../lib/api';
+import React, { createContext, useContext, useState, useEffect } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { apiFetch, setApiSessionId, ApiResponse } from "../lib/api";
 
-const SESSION_STORAGE_KEY = '@parkaddis_session_id';
+const SESSION_STORAGE_KEY = "@parkaddis_session_id";
+const PROFILE_STORAGE_KEY = "@parkaddis_clerk_profile";
 
 interface User {
   id: string;
-  userId: string;
   email: string;
   fullName: string;
   role: string;
+  status?: string;
+  userType?: string;
+  shiftStartTime?: string;
+  shiftEndTime?: string;
+  assignedLocationId?: string;
+  locationName?: string;
 }
 
 interface AuthContextType {
   user: User | null;
   sessionId: string | null;
   isLoading: boolean;
-  login: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
+  login: (
+    email: string,
+    password: string,
+  ) => Promise<{ ok: boolean; error?: string }>;
   register: (data: any) => Promise<{ ok: boolean; error?: string }>;
   logout: () => Promise<void>;
   refreshProfile: () => Promise<void>;
@@ -29,7 +38,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [sessionId, setSessionIdState] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Persist helper
   const persistSession = async (id: string | null) => {
     if (id) {
       await AsyncStorage.setItem(SESSION_STORAGE_KEY, id);
@@ -38,20 +46,58 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  // On mount: restore session from storage
+  const persistProfile = async (profile: User | null) => {
+    if (profile) {
+      await AsyncStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profile));
+    } else {
+      await AsyncStorage.removeItem(PROFILE_STORAGE_KEY);
+    }
+  };
+
+  const loadCachedProfile = async (): Promise<User | null> => {
+    try {
+      const raw = await AsyncStorage.getItem(PROFILE_STORAGE_KEY);
+      if (!raw) return null;
+      return JSON.parse(raw) as User;
+    } catch {
+      return null;
+    }
+  };
+
+  const parseProfileResponse = (result: ApiResponse<any>): User | null => {
+    if (!result.ok || !result.data) return null;
+    const payload = result.data as any;
+    return payload.user || payload;
+  };
+
+  const fetchProfile = async () => {
+    let result = await apiFetch<any>("/clerk/me");
+    if (!result.ok && result.status === 404) {
+      result = await apiFetch<any>("/auth/me");
+    }
+    return result;
+  };
+
   useEffect(() => {
     const restoreSession = async () => {
       try {
+        const cachedProfile = await loadCachedProfile();
+        if (cachedProfile) {
+          setUser(cachedProfile);
+        }
+
         const storedId = await AsyncStorage.getItem(SESSION_STORAGE_KEY);
         if (storedId) {
           setApiSessionId(storedId);
           setSessionIdState(storedId);
-          // Validate the session is still alive
-          const result = await apiFetch<User>('/auth/me');
-          if (result.ok && result.data) {
-            setUser(result.data);
-          } else {
-            // Session expired — clear it
+
+          const result = await fetchProfile();
+          const profile = parseProfileResponse(result);
+
+          if (profile) {
+            setUser(profile);
+            await persistProfile(profile);
+          } else if (!cachedProfile) {
             await persistSession(null);
             setApiSessionId(null);
             setSessionIdState(null);
@@ -67,17 +113,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const login = async (email: string, password: string) => {
-    const result = await apiFetch<{ user: User; sessionId: string }>('/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ email, password }),
-    });
+    const result = await apiFetch<{ user: User; sessionId: string }>(
+      "/clerk/login",
+      {
+        method: "POST",
+        body: JSON.stringify({ email, password }),
+      },
+    );
 
     if (result.ok && result.data) {
       const { user: loggedInUser, sessionId: newSessionId } = result.data;
-      setUser(loggedInUser);
-      setSessionIdState(newSessionId);
-      setApiSessionId(newSessionId);
       await persistSession(newSessionId);
+      setApiSessionId(newSessionId);
+      setSessionIdState(newSessionId);
+      setUser(loggedInUser);
+      await persistProfile(loggedInUser);
       return { ok: true };
     }
 
@@ -85,17 +135,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const register = async (data: any) => {
-    const result = await apiFetch<{ sessionId: string }>('/auth/register', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+    const result = await apiFetch<{ user: User; sessionId: string }>(
+      "/clerk/register",
+      {
+        method: "POST",
+        body: JSON.stringify(data),
+      },
+    );
 
     if (result.ok && result.data) {
-      const newSessionId = result.data.sessionId;
-      setSessionIdState(newSessionId);
-      setApiSessionId(newSessionId);
+      const { user: registeredUser, sessionId: newSessionId } = result.data;
       await persistSession(newSessionId);
-      await refreshProfile();
+      setApiSessionId(newSessionId);
+      setSessionIdState(newSessionId);
+      setUser(registeredUser);
+      await persistProfile(registeredUser);
       return { ok: true };
     }
 
@@ -107,12 +161,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setSessionIdState(null);
     setApiSessionId(null);
     await persistSession(null);
+    await persistProfile(null);
   };
 
   const refreshProfile = async () => {
-    const result = await apiFetch<User>('/auth/me');
-    if (result.ok && result.data) {
-      setUser(result.data);
+    const result = await fetchProfile();
+    const profile = parseProfileResponse(result);
+    if (profile) {
+      setUser(profile);
+      await persistProfile(profile);
     } else if (result.status === 401) {
       await logout();
     }
@@ -138,7 +195,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 export function useAuth() {
   const context = useContext(AuthContext);
   if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
+    throw new Error("useAuth must be used within an AuthProvider");
   }
   return context;
 }
