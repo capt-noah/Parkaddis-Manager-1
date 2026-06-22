@@ -14,6 +14,7 @@ import TopBar from "../components/TopBar";
 import BottomNav from "../components/BottomNav";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useTheme } from "../context/ThemeContext";
+import { useAuth } from "../context/AuthContext";
 import { apiFetch } from "../lib/api";
 import Loader from '../components/Loader';
 import {
@@ -23,6 +24,7 @@ import {
   isPaymentCleared,
   PaymentVerificationResult,
 } from "../lib/clerkGate";
+import { useClerkShiftGuard } from "../hooks/useClerkShiftGuard";
 
 interface SearchResult {
   user: any;
@@ -32,6 +34,8 @@ interface SearchResult {
 export default function ManualReservation() {
   const router = useRouter();
   const { isDark } = useTheme();
+  const { user } = useAuth();
+  const { guardAction, ShiftGuardModal, showShiftBlocked } = useClerkShiftGuard();
   const [isLoading, setIsLoading] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [qrToken, setQrToken] = useState("");
@@ -45,6 +49,15 @@ export default function ManualReservation() {
   >({});
   const [verifyingReservationId, setVerifyingReservationId] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+
+  // Check shift hours on mount
+  useEffect(() => {
+    if (!user) return;
+    const canUseGate = guardAction(() => {});
+    if (!canUseGate) {
+      // Shift guard modal will be shown automatically
+    }
+  }, [user]);
 
   const extractReservation = (result: any) => {
     if (!result) return null;
@@ -70,13 +83,12 @@ export default function ManualReservation() {
         (inner.status || inner.actualStartTime || inner.actualEndTime)
       )
         return inner;
-      // If data is an array, pick active/reserved
+      // If data is an array, pick active/reserved (never cancelled)
       if (Array.isArray(inner)) {
         return (
           inner.find(
             (r: any) => r.status === "ACTIVE" || r.status === "RESERVED",
           ) ||
-          inner[0] ||
           null
         );
       }
@@ -88,7 +100,6 @@ export default function ManualReservation() {
         result.reservations.find(
           (r: any) => r.status === "ACTIVE" || r.status === "RESERVED",
         ) ||
-        result.reservations[0] ||
         null
       );
     }
@@ -109,6 +120,12 @@ export default function ManualReservation() {
       setValidationError("Enter a QR token to validate.");
       return;
     }
+
+    // Check shift hours before proceeding
+    const canProceed = guardAction(() => {
+      // This will only execute if within shift hours
+    });
+    if (!canProceed) return;
 
     setValidationError(null);
     setIsLoading(true);
@@ -174,7 +191,8 @@ export default function ManualReservation() {
         return;
       }
 
-      const reservation = activeReservation || null;
+      // Treat cancelled reservations as no reservation
+      const reservation = (activeReservation && activeReservation.status !== "CANCELLED") ? activeReservation : null;
       setSearchResults([{ user, reservation }]);
 
       if (locationMismatch) {
@@ -186,6 +204,9 @@ export default function ManualReservation() {
       }
     } else {
       setSearchResults([]);
+      if (result.status === 403) {
+        showShiftBlocked();
+      }
       setSearchError(getSearchErrorMessage(result));
     }
   };
@@ -264,7 +285,7 @@ export default function ManualReservation() {
             </View>
 
             <TouchableOpacity
-              onPress={() => handleValidateToken()}
+              onPress={() => guardAction(() => handleValidateToken())}
               disabled={isLoading}
               className={`w-full py-4 rounded-2xl items-center justify-center mb-4 ${isLoading ? "bg-slate-200 dark:bg-slate-700" : "bg-primary dark:bg-emerald-800"}`}
             >
@@ -314,7 +335,7 @@ export default function ManualReservation() {
                   className="flex-1 bg-slate-50 dark:bg-slate-900/50 rounded-2xl py-4 px-4 text-slate-900 dark:text-white"
                 />
                 <TouchableOpacity
-                  onPress={handleSearchUser}
+                  onPress={() => guardAction(() => handleSearchUser())}
                   disabled={isSearching}
                   className={`px-5 py-4 rounded-2xl items-center justify-center ${isSearching ? "bg-slate-200 dark:bg-slate-700" : "bg-primary dark:bg-emerald-800"}`}
                 >
@@ -377,7 +398,7 @@ export default function ManualReservation() {
                         <View className="gap-3">
                           {reservation.status === "RESERVED" && token ? (
                             <TouchableOpacity
-                              onPress={() => handleValidateToken(token)}
+                              onPress={() => guardAction(() => handleValidateToken(token))}
                               disabled={isLoading || actionLoading === reservation.id}
                               className={`w-full py-4 rounded-2xl items-center justify-center ${isLoading || actionLoading === reservation.id ? "bg-slate-200 dark:bg-slate-700" : "bg-primary dark:bg-emerald-800"}`}
                             >
@@ -394,10 +415,12 @@ export default function ManualReservation() {
                           {reservation.status === "ACTIVE" && token ? (
                             <TouchableOpacity
                               onPress={() => {
-                                setActionLoading(reservation.id);
-                                handleValidateToken(token).finally(() =>
-                                  setActionLoading(null),
-                                );
+                                guardAction(() => {
+                                  setActionLoading(reservation.id);
+                                  handleValidateToken(token).finally(() =>
+                                    setActionLoading(null),
+                                  );
+                                });
                               }}
                               disabled={isLoading || actionLoading === reservation.id}
                               className={`w-full py-4 rounded-2xl items-center justify-center ${isLoading || actionLoading === reservation.id ? "bg-slate-200 dark:bg-slate-700" : "bg-primary dark:bg-emerald-800"}`}
@@ -497,6 +520,7 @@ export default function ManualReservation() {
       </KeyboardAvoidingView>
 
       <BottomNav />
+      <ShiftGuardModal />
     </SafeAreaView>
   );
 }

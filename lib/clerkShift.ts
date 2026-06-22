@@ -1,4 +1,4 @@
-const OVERLAP_MINS = 60;
+const OVERLAP_MINS = 0;
 
 export interface ClerkShiftProfile {
   shiftStartTime?: string | null;
@@ -52,11 +52,45 @@ export function checkClerkShift(
   }
 
   const now = new Date();
-  const currentHour = now.getHours();
-  const currentMinute = now.getMinutes();
+  const utcHour = now.getUTCHours();
+  const currentMinute = now.getUTCMinutes();
+  
+  // Force Addis Ababa time (UTC+3) regardless of simulator/device timezone setting
+  let currentHour = utcHour + 3;
+  if (currentHour >= 24) currentHour -= 24;
 
-  const [startH, startM] = profile.shiftStartTime.split(":").map(Number);
-  const [endH, endM] = profile.shiftEndTime.split(":").map(Number);
+  // Helper to extract hours and minutes robustly from either "HH:MM" or "2026-06-22T08:00:00Z"
+  const parseTime = (timeStr: string): [number, number] => {
+    // If it's an ISO string, try parsing it as a Date to get local time, 
+    // or extract the time part if we want to treat the literal string as local time.
+    // The previous logic assumed the literal string's hour was the local hour.
+    let h = NaN;
+    let m = NaN;
+    
+    if (timeStr.includes("T")) {
+      // It's an ISO string like 1970-01-01T08:00:00.000Z
+      const d = new Date(timeStr);
+      if (!isNaN(d.getTime())) {
+        return [d.getHours(), d.getMinutes()];
+      }
+    }
+    
+    // Fallback: extract the first two numbers separated by a colon
+    const match = timeStr.match(/(\d+):(\d+)/);
+    if (match) {
+      h = parseInt(match[1], 10);
+      m = parseInt(match[2], 10);
+    }
+    return [h, m];
+  };
+
+  const [startH, startM] = parseTime(profile.shiftStartTime);
+  const [endH, endM] = parseTime(profile.shiftEndTime);
+
+  if (isNaN(startH) || isNaN(endH)) {
+    // Default to strict fail if we can't parse
+    return { ok: false, message: "Invalid shift hours format." };
+  }
 
   const shiftStartMins = startH * 60 + startM;
   let shiftEndMins = endH * 60 + endM;

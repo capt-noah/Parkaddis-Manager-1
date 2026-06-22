@@ -45,20 +45,23 @@ export default function Scanner() {
   // Animation values
   const scanLineY = useSharedValue(0);
 
-  // Refresh profile on mount to get latest shift times, then gate check
+  // Refresh profile on mount to get latest shift times
   useEffect(() => {
-    refreshProfile().then(() => {
-      if (!user) return;
-      const gateCheck = checkClerkGateAccess({
-        status: user.status,
-        shiftStartTime: user.shiftStartTime,
-        shiftEndTime: user.shiftEndTime,
-      });
-      if (!gateCheck.ok) {
-        showShiftBlocked();
-      }
-    });
+    refreshProfile();
   }, []);
+
+  // Re-evaluate gate check whenever user profile changes
+  useEffect(() => {
+    if (!user) return;
+    const gateCheck = checkClerkGateAccess({
+      status: user.status,
+      shiftStartTime: user.shiftStartTime,
+      shiftEndTime: user.shiftEndTime,
+    });
+    if (!gateCheck.ok) {
+      showShiftBlocked();
+    }
+  }, [user]);
 
   useEffect(() => {
     if (!isScanning) {

@@ -12,6 +12,7 @@ import TopBar from '../components/TopBar';
 import BottomNav from '../components/BottomNav';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
 
 import { fetchClerkSessions, ClerkSession, isPaidSession, getSessionTotal } from '../lib/clerkSessions';
 import { TicketQrModal } from '../components/TicketQrModal';
@@ -22,12 +23,15 @@ import {
   Reservation,
 } from '../lib/reservationDisplay';
 import { SessionsShimmer } from '../components/SessionsShimmer';
+import { useClerkShiftGuard } from '../hooks/useClerkShiftGuard';
 
 type SessionFilter = 'all' | 'active' | 'unpaid' | 'paid';
 
 const FILTER_OPTIONS: SessionFilter[] = ['all', 'active', 'unpaid', 'paid'];
 
 export default function Sessions() {
+  const { user } = useAuth();
+  const { guardAction, ShiftGuardModal, showShiftBlocked } = useClerkShiftGuard();
   const [activeFilter, setActiveFilter] = useState<SessionFilter>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [refreshing, setRefreshing] = useState(false);
@@ -49,6 +53,15 @@ export default function Sessions() {
     }
   }, []);
 
+  // Check shift hours on mount
+  useEffect(() => {
+    if (!user) return;
+    const canUseGate = guardAction(() => {});
+    if (!canUseGate) {
+      // Shift guard modal will be shown automatically
+    }
+  }, [user]);
+
   const fetchData = async () => {
     setIsLoading(true);
     setFetchError(null);
@@ -59,6 +72,7 @@ export default function Sessions() {
     } else if (result.status === 403) {
       setAllSessions([]);
       setFetchError(result.error || 'Shift ended. Please hand over the device.');
+      showShiftBlocked();
     }
     setIsLoading(false);
   };
@@ -260,6 +274,7 @@ export default function Sessions() {
       />
 
       <BottomNav />
+      <ShiftGuardModal />
     </SafeAreaView>
   );
 }

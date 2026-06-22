@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from "react";
+import React, { createContext, useContext, useState, useEffect, useRef } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { apiFetch, setApiSessionId, ApiResponse } from "../lib/api";
 
@@ -28,7 +28,7 @@ interface AuthContextType {
   ) => Promise<{ ok: boolean; error?: string }>;
   register: (data: any) => Promise<{ ok: boolean; error?: string }>;
   logout: () => Promise<void>;
-  refreshProfile: () => Promise<void>;
+  refreshProfile: (force?: boolean) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -37,6 +37,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [sessionId, setSessionIdState] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const lastRefreshedAt = useRef<number>(0);
+  const isRefreshing = useRef<boolean>(false);
+  const REFRESH_COOLDOWN_MS = 30_000; // 30 seconds
 
   const persistSession = async (id: string | null) => {
     if (id) {
@@ -164,8 +167,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await persistProfile(null);
   };
 
-  const refreshProfile = async () => {
+  const refreshProfile = async (force = false) => {
+    const now = Date.now();
+    // Skip if a refresh is already in-flight or was done recently
+    if (isRefreshing.current) return;
+    if (!force && now - lastRefreshedAt.current < REFRESH_COOLDOWN_MS) return;
+
+    isRefreshing.current = true;
     const result = await fetchProfile();
+    isRefreshing.current = false;
+    lastRefreshedAt.current = Date.now();
+
     const profile = parseProfileResponse(result);
     if (profile) {
       setUser(profile);

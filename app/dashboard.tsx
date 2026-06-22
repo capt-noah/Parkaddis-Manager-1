@@ -47,7 +47,7 @@ const extractReservation = (result: any) => {
 export default function Dashboard() {
   const router = useRouter();
   const { isDark } = useTheme();
-  const { user, isLoading: authLoading } = useAuth();
+  const { user, isLoading: authLoading, refreshProfile } = useAuth();
   const { guardAction, ShiftGuardModal } = useClerkShiftGuard();
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
   const [selectedSession, setSelectedSession] = useState<ClerkSession | null>(null);

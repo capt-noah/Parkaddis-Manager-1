@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { Alert } from "react-native";
 import { useAuth } from "../context/AuthContext";
 import {
   checkClerkGateAccess,
@@ -20,13 +21,16 @@ export function useClerkShiftGuard() {
 
   const canUseGate = checkClerkGateAccess(gateProfile).ok;
 
-  const showGateBlocked = useCallback(() => {
+  const showGateBlocked = useCallback((forceReason?: ClerkGateBlockReason, forceMessage?: string) => {
     const check = checkClerkGateAccess(gateProfile);
     if (!check.ok) {
       setBlockReason(check.reason);
       setBlockMessage(check.message);
-      setShowGateModal(true);
+    } else {
+      setBlockReason(forceReason || "shift");
+      setBlockMessage(forceMessage || "Access denied. You may be outside your shift hours.");
     }
+    setShowGateModal(true);
   }, [user?.status, user?.shiftStartTime, user?.shiftEndTime]);
 
   const guardAction = useCallback(

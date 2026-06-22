@@ -5,6 +5,7 @@ import {
   ScrollView,
   TouchableOpacity,
   Switch,
+  RefreshControl,
 } from "react-native";
 import { useRouter } from "expo-router";
 import Loader from '../components/Loader';
@@ -29,22 +30,31 @@ import { useTheme } from "../context/ThemeContext";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 import { fetchClerkSessions } from "../lib/clerkSessions";
+import { formatShiftRange } from "../lib/clerkShift";
 
 import { useAuth } from "../context/AuthContext";
 
 export default function Profile() {
   const router = useRouter();
   const { isDark } = useTheme();
-  const { user, logout } = useAuth();
+  const { user, logout, refreshProfile } = useAuth();
   const [isLoading, setIsLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [isReportsOpen, setIsReportsOpen] = useState(false);
   const [isSecurityOpen, setIsSecurityOpen] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
 
   useEffect(() => {
-    const timer = setTimeout(() => setIsLoading(false), 800);
-    return () => clearTimeout(timer);
+    refreshProfile().finally(() => {
+      const timer = setTimeout(() => setIsLoading(false), 800);
+    });
   }, []);
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await refreshProfile(true); // force=true: always fetch on manual pull-to-refresh
+    setRefreshing(false);
+  };
 
   const handleLogout = () => {
     logout();
@@ -116,13 +126,20 @@ export default function Profile() {
           className="flex-1 px-6 w-full"
           contentContainerStyle={{ paddingBottom: 110 }}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor="#064e3b"
+            />
+          }
         >
           {/* Profile Header Section - Restored with Avatar and User Info */}
           <View className="items-center mt-6 mb-10">
             <View className="relative">
                             <View className="w-28 h-28 rounded-[40px] bg-primary items-center justify-center border-4 border-white dark:border-slate-800 shadow-xl shadow-slate-200 dark:shadow-black/50">
                 <Text className="text-4xl font-headline font-extrabold text-white" style={{ letterSpacing: -1 }}>
-                  {(user?.fullName || user?.name || "?").charAt(0).toUpperCase()}
+                  {(user?.fullName || "?").charAt(0).toUpperCase()}
                 </Text>
               </View>
               <View className="absolute -bottom-2 -right-2 bg-primary w-8 h-8 rounded-2xl border-4 border-white dark:border-slate-800 items-center justify-center">
@@ -132,7 +149,7 @@ export default function Profile() {
 
             <View className="items-center mt-4">
               <Text className="text-2xl font-headline font-bold text-slate-900 dark:text-white">
-                {user?.fullName || user?.name || "Clerk"}
+                {user?.fullName || "Clerk"}
               </Text>
               <Text className="text-sm font-medium text-slate-500 dark:text-slate-400 mt-1 uppercase tracking-widest">
                 {user?.role === "admin" ? "Clerk Supervisor" : "Clerk"}
@@ -157,10 +174,12 @@ export default function Profile() {
                     </View>
                     <View>
                       <Text className="text-sm font-bold text-slate-900 dark:text-white">
-                        Morning Shift • Terminal A
+                        {user?.locationName || "Current Shift"}
                       </Text>
                       <Text className="text-[10px] text-slate-400 dark:text-slate-500 font-medium uppercase tracking-wide">
-                        Oct 24, 2023 • 08:00 - 16:00
+                        {user?.shiftStartTime && user?.shiftEndTime 
+                          ? `Today • ${formatShiftRange(user.shiftStartTime, user.shiftEndTime)}` 
+                          : 'No shift assigned'}
                       </Text>
                     </View>
                   </View>
